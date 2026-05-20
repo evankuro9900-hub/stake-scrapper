@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.venv
+app.db
+.env
+.git
+.gitignore
+tests
+.fly
+.devin
+deploy.sh
+DEPLOY.md
