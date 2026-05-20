@@ -12,8 +12,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from sqlalchemy import text
+
 from .config import TARGET_LEAGUES, settings
-from .database import SessionFactory, init_models
+from .database import SessionFactory, engine, init_models
 from .models import ApiKey, League
 from .routes import router
 from .scraper import run_scrape
@@ -28,23 +30,41 @@ log = logging.getLogger("app")
 scheduler = AsyncIOScheduler()
 
 
+async def _run_migrations() -> None:
+    """Jalankan SQL migration ringan — tambah kolom baru kalau belum ada."""
+    async with engine.begin() as conn:
+        # Tambah kolom sport ke leagues kalau belum ada (SQLite-friendly)
+        try:
+            await conn.execute(
+                text("ALTER TABLE leagues ADD COLUMN sport VARCHAR(32) NOT NULL DEFAULT 'soccer'")
+            )
+            log.info("Migration: added leagues.sport column")
+        except Exception:
+            pass  # Kolom sudah ada
+
+
 async def _seed_initial_data() -> None:
     """Seed default leagues & initial Scrappey key (from env) on first start."""
     async with SessionFactory() as session:
         existing = await session.execute(select(League))
-        existing_keys = {
-            (lg.country.lower(), lg.slug.lower()) for lg in existing.scalars()
+        existing_map = {
+            (lg.country.lower(), lg.slug.lower()): lg for lg in existing.scalars()
         }
         for tl in TARGET_LEAGUES:
             k = (tl["country"].lower(), tl["league_slug"].lower())
-            if k not in existing_keys:
+            sport = tl.get("sport", "soccer")
+            if k not in existing_map:
                 session.add(
                     League(
                         country=tl["country"],
                         slug=tl["league_slug"],
                         label=tl["label"],
+                        sport=sport,
                     )
                 )
+            else:
+                # Update sport kalau belum benar
+                existing_map[k].sport = sport
         await session.commit()
 
         keys_res = await session.execute(select(ApiKey))
@@ -71,6 +91,7 @@ async def _scheduled_scrape() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_models()
+    await _run_migrations()
     await _seed_initial_data()
     await pool.load_from_db()
 
